@@ -446,9 +446,13 @@ async function gsSaveToServer(){
     const data = await res.json();
     if(!data.ok) throw new Error(data.error);
     lastSyncedJSON = json;
+    // 로컬에도 동일하게 저장 (다음 로드 시 fallback용)
+    try{ localStorage.setItem('tp_projects_v2',JSON.stringify(projects)); localStorage.setItem('tp_active_v2',activeProjectId); }catch(e){}
     updateSyncIndicator('ok','동기화됨');
   }catch(e){
-    updateSyncIndicator('error','저장 실패');
+    updateSyncIndicator('error','저장 실패 — 로컬엔 저장됨');
+    // 서버 실패해도 로컬엔 저장
+    try{ localStorage.setItem('tp_projects_v2',JSON.stringify(projects)); }catch(e2){}
   }
 }
 
@@ -467,8 +471,6 @@ async function syncNow(){
 }
 
 function mergeFromServer(serverProjects){
-  // 서버 데이터로 projects 교체 (현재 편집 중인 건 서버 우선)
-  const cur = projects.find(p=>p.id===activeProjectId);
   projects = serverProjects;
   projects.forEach(p=>{
     p.plan = p.plan||{dest:'',title:p.name,people:2,days:[],betweenDividers:{}};
@@ -478,12 +480,25 @@ function mergeFromServer(serverProjects){
     p.memo.forEach(n=>{n.checklist=n.checklist||[];n.photos=n.photos||[];});
     const n=parseInt(p.id.replace('proj_',''));if(n>projectIdCounter)projectIdCounter=n;
   });
-  if(projects.length===0) createProject('새 여행');
-  else {
-    const found = projects.find(p=>p.id===activeProjectId);
-    activateProject(found?activeProjectId:projects[0].id, false);
-  }
-  renderProjectTabs();
+  const found = projects.find(p=>p.id===activeProjectId);
+  const targetId = found ? activeProjectId : projects[0].id;
+  applyProject(targetId);
+  // 서버 데이터를 로컬에도 반영
+  try{ localStorage.setItem('tp_projects_v2',JSON.stringify(projects)); localStorage.setItem('tp_active_v2',targetId); }catch(e){}
+  renderProjectTabs(); renderAll(); renderMemoTabs();
+}
+
+// activateProject 없이 단순히 현재 project 데이터만 교체 (저장 없음)
+function applyProject(pid){
+  activeProjectId = pid;
+  const proj = projects.find(p=>p.id===pid);
+  if(!proj) return;
+  plan = proj.plan;
+  memoNotes = proj.memo;
+  plan.betweenDividers = plan.betweenDividers||{};
+  dayIdCounter=0; itemIdCounter=0; noteIdCounter=0; checkIdCounter=0;
+  restoreItemCounters();
+  activeNoteId = memoNotes.length>0 ? memoNotes[0].id : null;
 }
 
 function updateSyncIndicator(state, label){
@@ -528,13 +543,17 @@ window.onload = async ()=>{
     renderProjectTabs(); renderAll(); renderMemoTabs();
     showToast('📂 저장된 일정을 불러왔습니다');
   } else if(gsUrl){
-    // 구글 시트 연동됨 → 서버에서 불러오기
+    // 구글 시트 연동됨 → 서버 데이터 우선 로드
     updateSyncIndicator('syncing','불러오는 중…');
-    loadFromStorage(); // 우선 로컬 표시
-    if(projects.length===0) createProject('새 여행');
-    else { activateProject(activeProjectId||projects[0].id,false); renderProjectTabs(); renderAll(); renderMemoTabs(); }
-    await gsLoadFromServer(); // 서버로 덮어쓰기
-    updateSyncIndicator('ok');
+    await gsLoadFromServer();
+    // 서버에 데이터 없으면 로컬 fallback
+    if(projects.length===0){
+      loadFromStorage();
+      if(projects.length===0) createProject('새 여행');
+      else { applyProject(activeProjectId||projects[0].id); }
+      renderProjectTabs(); renderAll(); renderMemoTabs();
+    }
+    updateSyncIndicator('ok','동기화됨');
   } else {
     loadFromStorage();
     if(projects.length===0){
